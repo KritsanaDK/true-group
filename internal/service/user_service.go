@@ -216,7 +216,7 @@ func (s *trueService) GetBatchRecommendations(page, limit int) (model.BatchRecom
 
 		for user := range jobs {
 
-			recs, err := s.GetRecommendations(user.ID, 10)
+			recs, err := s.GetRecommendations(user.ID, 100)
 
 			if err != nil {
 

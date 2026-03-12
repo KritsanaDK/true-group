@@ -3,14 +3,18 @@ package repository
 import (
 	"context"
 	"tdg/internal/model"
+	"time"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
+const defaultQueryTimeout = 3 * time.Second
+
 type ITrueRepository interface {
 	GetUserByID(userID int64) (*model.User, error)
 	GetWatchHistory(userID int64, limit int) ([]model.WatchHistory, error)
+	GetWatchHistoryByUserIDs(userIDs []int64, limit int) (map[int64][]model.WatchHistory, error)
 	GetCandidateContent(userID int64, limit int) ([]model.Content, error)
 	GetUsersBatch(page, limit int) ([]model.User, int, error)
 }
@@ -27,6 +31,10 @@ func NewTrueRepository(ctx context.Context, client *pgxpool.Pool) (ITrueReposito
 	}, nil
 }
 
+func (r *trueRepository) withTimeout() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.ctx, defaultQueryTimeout)
+}
+
 func (r *trueRepository) GetUserByID(userID int64) (*model.User, error) {
 
 	query := `
@@ -35,7 +43,10 @@ func (r *trueRepository) GetUserByID(userID int64) (*model.User, error) {
 	WHERE id = $1
 	`
 
-	row := r.client.QueryRow(r.ctx, query, userID)
+	queryCtx, cancel := r.withTimeout()
+	defer cancel()
+
+	row := r.client.QueryRow(queryCtx, query, userID)
 
 	user := model.User{}
 
@@ -69,7 +80,10 @@ func (r *trueRepository) GetWatchHistory(userID int64, limit int) ([]model.Watch
 		LIMIT $2;
 	`
 
-	rows, err := r.client.Query(r.ctx, query, userID, limit)
+	queryCtx, cancel := r.withTimeout()
+	defer cancel()
+
+	rows, err := r.client.Query(queryCtx, query, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +111,63 @@ func (r *trueRepository) GetWatchHistory(userID int64, limit int) ([]model.Watch
 	return history, nil
 }
 
+func (r *trueRepository) GetWatchHistoryByUserIDs(userIDs []int64, limit int) (map[int64][]model.WatchHistory, error) {
+	historyByUser := make(map[int64][]model.WatchHistory)
+
+	if len(userIDs) == 0 {
+		return historyByUser, nil
+	}
+
+	query := `
+		SELECT user_id, content_id, genre, watched_at
+		FROM (
+			SELECT
+				uwh.user_id,
+				c.id AS content_id,
+				c.genre,
+				uwh.watched_at,
+				ROW_NUMBER() OVER (PARTITION BY uwh.user_id ORDER BY uwh.watched_at DESC) AS rn
+			FROM user_watch_history uwh
+			JOIN content c ON uwh.content_id = c.id
+			WHERE uwh.user_id = ANY($1)
+		) ranked
+		WHERE rn <= $2
+		ORDER BY user_id, watched_at DESC
+	`
+
+	queryCtx, cancel := r.withTimeout()
+	defer cancel()
+
+	rows, err := r.client.Query(queryCtx, query, userIDs, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID int64
+		var item model.WatchHistory
+
+		err := rows.Scan(
+			&userID,
+			&item.ID,
+			&item.Genre,
+			&item.WatchedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		historyByUser[userID] = append(historyByUser[userID], item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return historyByUser, nil
+}
+
 func (r *trueRepository) GetCandidateContent(userID int64, limit int) ([]model.Content, error) {
 
 	query := `
@@ -111,7 +182,10 @@ func (r *trueRepository) GetCandidateContent(userID int64, limit int) ([]model.C
 	LIMIT $2
 	`
 
-	rows, err := r.client.Query(r.ctx, query, userID, limit)
+	queryCtx, cancel := r.withTimeout()
+	defer cancel()
+
+	rows, err := r.client.Query(queryCtx, query, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +219,10 @@ func (r *trueRepository) GetUsersBatch(page, limit int) ([]model.User, int, erro
 
 	offset := (page - 1) * limit
 
-	rows, err := r.client.Query(r.ctx,
+	queryCtx, cancel := r.withTimeout()
+	defer cancel()
+
+	rows, err := r.client.Query(queryCtx,
 		`SELECT id, age, country, subscription_type
 		 FROM users
 		 ORDER BY id
@@ -173,7 +250,7 @@ func (r *trueRepository) GetUsersBatch(page, limit int) ([]model.User, int, erro
 	}
 
 	var total int
-	err = r.client.QueryRow(r.ctx,
+	err = r.client.QueryRow(queryCtx,
 		`SELECT COUNT(*) FROM users`).Scan(&total)
 
 	return users, total, err
