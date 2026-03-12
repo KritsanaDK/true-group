@@ -1,4 +1,3 @@
-
 package logger
 
 import (
@@ -370,4 +369,3 @@ func LogErrorQueue(message, errMessage string, log *zap.SugaredLogger, tracking 
 		zap.String("interval", fmt.Sprintf("%f", interval)),
 	)
 }
-
