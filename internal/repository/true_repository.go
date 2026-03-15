@@ -46,11 +46,20 @@ func (r *trueRepository) GetUserByID(userID int64) (*model.User, error) {
 	queryCtx, cancel := r.withTimeout()
 	defer cancel()
 
-	row := r.client.QueryRow(queryCtx, query, userID)
+	tx, err := r.client.Begin(queryCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		_ = tx.Rollback(queryCtx)
+	}()
+
+	row := tx.QueryRow(queryCtx, query, userID)
 
 	user := model.User{}
 
-	err := row.Scan(
+	err = row.Scan(
 		&user.ID,
 		&user.Age,
 		&user.Country,
@@ -63,6 +72,10 @@ func (r *trueRepository) GetUserByID(userID int64) (*model.User, error) {
 			return nil, nil
 		}
 
+		return nil, err
+	}
+
+	if err := tx.Commit(queryCtx); err != nil {
 		return nil, err
 	}
 
@@ -83,7 +96,16 @@ func (r *trueRepository) GetWatchHistory(userID int64, limit int) ([]model.Watch
 	queryCtx, cancel := r.withTimeout()
 	defer cancel()
 
-	rows, err := r.client.Query(queryCtx, query, userID, limit)
+	tx, err := r.client.Begin(queryCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		_ = tx.Rollback(queryCtx)
+	}()
+
+	rows, err := tx.Query(queryCtx, query, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +128,14 @@ func (r *trueRepository) GetWatchHistory(userID int64, limit int) ([]model.Watch
 		}
 
 		history = append(history, h)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(queryCtx); err != nil {
+		return nil, err
 	}
 
 	return history, nil
@@ -138,7 +168,16 @@ func (r *trueRepository) GetWatchHistoryByUserIDs(userIDs []int64, limit int) (m
 	queryCtx, cancel := r.withTimeout()
 	defer cancel()
 
-	rows, err := r.client.Query(queryCtx, query, userIDs, limit)
+	tx, err := r.client.Begin(queryCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		_ = tx.Rollback(queryCtx)
+	}()
+
+	rows, err := tx.Query(queryCtx, query, userIDs, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +204,10 @@ func (r *trueRepository) GetWatchHistoryByUserIDs(userIDs []int64, limit int) (m
 		return nil, err
 	}
 
+	if err := tx.Commit(queryCtx); err != nil {
+		return nil, err
+	}
+
 	return historyByUser, nil
 }
 
@@ -185,7 +228,16 @@ func (r *trueRepository) GetCandidateContent(userID int64, limit int) ([]model.C
 	queryCtx, cancel := r.withTimeout()
 	defer cancel()
 
-	rows, err := r.client.Query(queryCtx, query, userID, limit)
+	tx, err := r.client.Begin(queryCtx)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		_ = tx.Rollback(queryCtx)
+	}()
+
+	rows, err := tx.Query(queryCtx, query, userID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -212,6 +264,14 @@ func (r *trueRepository) GetCandidateContent(userID int64, limit int) ([]model.C
 		contents = append(contents, c)
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(queryCtx); err != nil {
+		return nil, err
+	}
+
 	return contents, nil
 }
 
@@ -222,7 +282,16 @@ func (r *trueRepository) GetUsersBatch(page, limit int) ([]model.User, int, erro
 	queryCtx, cancel := r.withTimeout()
 	defer cancel()
 
-	rows, err := r.client.Query(queryCtx,
+	tx, err := r.client.Begin(queryCtx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	defer func() {
+		_ = tx.Rollback(queryCtx)
+	}()
+
+	rows, err := tx.Query(queryCtx,
 		`SELECT id, age, country, subscription_type
 		 FROM users
 		 ORDER BY id
@@ -249,9 +318,22 @@ func (r *trueRepository) GetUsersBatch(page, limit int) ([]model.User, int, erro
 		users = append(users, u)
 	}
 
-	var total int
-	err = r.client.QueryRow(queryCtx,
-		`SELECT COUNT(*) FROM users`).Scan(&total)
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
 
-	return users, total, err
+	rows.Close()
+
+	var total int
+	err = tx.QueryRow(queryCtx,
+		`SELECT COUNT(*) FROM users`).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if err := tx.Commit(queryCtx); err != nil {
+		return nil, 0, err
+	}
+
+	return users, total, nil
 }
